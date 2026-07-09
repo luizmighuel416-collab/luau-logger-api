@@ -1,45 +1,124 @@
 from flask import Flask, request, jsonify
-import json
 import os
-from datetime import datetime
+import requests
+import re
 
 app = Flask(__name__)
 
-# Se quiser persistência, pode usar SQLite ou PostgreSQL
-# Aqui um exemplo simples em memória (reinicia a cada deploy)
-logs = []
+def deobfuscate_revea(code):
+    result = code
+    
+    def unescape_hex(match):
+        hex_str = match.group(1)
+        try:
+            cleaned = hex_str.replace('\\x', '')
+            decoded = bytes.fromhex(cleaned).decode('utf-8', errors='ignore')
+            return f'"{decoded}"'
+        except:
+            return match.group(0)
+    
+    result = re.sub(r'"(\\x[0-9a-fA-F]{2}(?:\\x[0-9a-fA-F]{2})+)"', unescape_hex, result)
+    
+    def unescape_dec(match):
+        nums = re.findall(r'\\(\d{1,3})', match.group(1))
+        try:
+            decoded = ''.join(chr(int(n)) for n in nums)
+            return f'"{decoded}"'
+        except:
+            return match.group(0)
+    
+    result = re.sub(r'"(\\\d{1,3}(?:\\\d{1,3})+)"', unescape_dec, result)
+    
+    for _ in range(10):
+        old = result
+        aliases = {}
+        for match in re.finditer(r'local\s+(\w+)\s*=\s*(\w+)', result):
+            alias, original = match.groups()
+            if original not in aliases and original != alias:
+                aliases[alias] = original
+        for alias, original in aliases.items():
+            result = re.sub(r'\b' + re.escape(alias) + r'\b', original, result)
+        if result == old:
+            break
+    
+    lines = result.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r'local\s+\w+\s*=\s+\w+\s*$', stripped):
+            parts = stripped.replace('local ', '').split('=')
+            if len(parts) == 2 and parts[0].strip() == parts[1].strip():
+                continue
+        cleaned_lines.append(line)
+    result = '\n'.join(cleaned_lines)
+    
+    global_funcs = ['print', 'warn', 'error', 'pcall', 'xpcall', 'loadstring',
+                    'require', 'pairs', 'ipairs', 'next', 'tonumber', 'tostring',
+                    'type', 'assert', 'collectgarbage', 'getfenv', 'setfenv',
+                    'rawget', 'rawset', 'rawequal', 'select', 'unpack', 'getmetatable',
+                    'setmetatable', 'debug', 'math', 'string', 'table', 'coroutine',
+                    'os', 'io', 'bit32', 'utf8']
+    
+    for func in global_funcs:
+        result = re.sub(rf'_G\["{func}"\]\b', func, result)
+        result = re.sub(rf'_G\[\'{func}\'\]\b', func, result)
+    
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    return result
+
+
+def fetch_url(url):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        r = requests.get(url, headers=headers, timeout=30)
+        if r.status_code == 200:
+            return r.text
+        return None
+    except:
+        return None
+
 
 @app.route('/')
 def home():
-    return jsonify({"status": "Luau Logger API online", "version": "1.0"})
+    return jsonify({
+        "status": "Luau Logger API online",
+        "endpoints": {
+            "POST /api/deobf": "Recebe codigo Luau (file ou JSON com code/url), retorna desofuscado"
+        }
+    })
 
-@app.route('/api/log', methods=['POST'])
-def receive_log():
-    data = request.get_json()
-    
-    log_entry = {
-        "timestamp": datetime.utcnow().isoformat(),
-        "script_name": data.get("script_name", "unknown"),
-        "level": data.get("level", "INFO"),
-        "message": data.get("message", ""),
-        "metadata": data.get("metadata", {}),
-        "ip": request.remote_addr
-    }
-    
-    logs.append(log_entry)
-    print(f"[{log_entry['level']}] {log_entry['script_name']}: {log_entry['message']}")
-    
-    return jsonify({"success": True, "received_at": log_entry["timestamp"]})
 
-@app.route('/api/logs', methods=['GET'])
-def get_logs():
-    limit = request.args.get('limit', 100, type=int)
-    return jsonify({"logs": logs[-limit:]})
+@app.route('/api/deobf', methods=['POST'])
+def deobfuscate_endpoint():
+    code = None
+    
+    if request.files:
+        file = request.files.get("file")
+        if file:
+            code = file.read().decode("utf-8", errors="replace")
+    
+    if not code:
+        data = request.get_json() or {}
+        code = data.get("code", "")
+        if not code and data.get("url"):
+            code = fetch_url(data["url"])
+            if not code:
+                return jsonify({"success": False, "error": "Failed to fetch URL"}), 400
+    
+    if not code or not code.strip():
+        return jsonify({"success": False, "error": "No code provided"}), 400
+    
+    try:
+        deobfuscated = deobfuscate_revea(code)
+        return jsonify({
+            "success": True,
+            "original_length": len(code),
+            "deobfuscated_length": len(deobfuscated),
+            "code": deobfuscated
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/logs/clear', methods=['POST'])
-def clear_logs():
-    logs.clear()
-    return jsonify({"success": True, "message": "Logs cleared"})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
