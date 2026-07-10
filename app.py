@@ -1,125 +1,186 @@
-from flask import Flask, request, jsonify
 import os
+import tempfile
 import requests
-import re
 
-app = Flask(__name__)
-
-def deobfuscate_revea(code):
-    result = code
-    
-    def unescape_hex(match):
-        hex_str = match.group(1)
-        try:
-            cleaned = hex_str.replace('\\x', '')
-            decoded = bytes.fromhex(cleaned).decode('utf-8', errors='ignore')
-            return f'"{decoded}"'
-        except:
-            return match.group(0)
-    
-    result = re.sub(r'"(\\x[0-9a-fA-F]{2}(?:\\x[0-9a-fA-F]{2})+)"', unescape_hex, result)
-    
-    def unescape_dec(match):
-        nums = re.findall(r'\\(\d{1,3})', match.group(1))
-        try:
-            decoded = ''.join(chr(int(n)) for n in nums)
-            return f'"{decoded}"'
-        except:
-            return match.group(0)
-    
-    result = re.sub(r'"(\\\d{1,3}(?:\\\d{1,3})+)"', unescape_dec, result)
-    
-    for _ in range(10):
-        old = result
-        aliases = {}
-        for match in re.finditer(r'local\s+(\w+)\s*=\s*(\w+)', result):
-            alias, original = match.groups()
-            if original not in aliases and original != alias:
-                aliases[alias] = original
-        for alias, original in aliases.items():
-            result = re.sub(r'\b' + re.escape(alias) + r'\b', original, result)
-        if result == old:
-            break
-    
-    lines = result.split('\n')
-    cleaned_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if re.match(r'local\s+\w+\s*=\s+\w+\s*$', stripped):
-            parts = stripped.replace('local ', '').split('=')
-            if len(parts) == 2 and parts[0].strip() == parts[1].strip():
-                continue
-        cleaned_lines.append(line)
-    result = '\n'.join(cleaned_lines)
-    
-    global_funcs = ['print', 'warn', 'error', 'pcall', 'xpcall', 'loadstring',
-                    'require', 'pairs', 'ipairs', 'next', 'tonumber', 'tostring',
-                    'type', 'assert', 'collectgarbage', 'getfenv', 'setfenv',
-                    'rawget', 'rawset', 'rawequal', 'select', 'unpack', 'getmetatable',
-                    'setmetatable', 'debug', 'math', 'string', 'table', 'coroutine',
-                    'os', 'io', 'bit32', 'utf8']
-    
-    for func in global_funcs:
-        result = re.sub(rf'_G\["{func}"\]\b', func, result)
-        result = re.sub(rf'_G\[\'{func}\'\]\b', func, result)
-    
-    result = re.sub(r'\n{3,}', '\n\n', result)
-    return result
+PASTEFY_URL = "https://pastefy.app/X7MUydRh/raw"
+API_URL = "https://api-speack.onrender.com/speack/api/v1/deobf"
+REVEA_URL = "https://web-production-eb197.up.railway.app/api/deobf"
+REVEA_DUMP_URL = "https://web-production-eb197.up.railway.app/api/revea"
+TOKEN_69MS = "ncj-ndh-kwm-wqj-3x4-lunar-is-the-best"
 
 
-def fetch_url(url):
-    headers = {"User-Agent": "Mozilla/5.0"}
+def _get_69ms_endpoint() -> str:
     try:
-        r = requests.get(url, headers=headers, timeout=30)
+        r = requests.get(PASTEFY_URL, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200:
-            return r.text
-        return None
-    except:
-        return None
+            endpoint = r.text.strip()
+            if endpoint.startswith("http"):
+                return endpoint
+    except Exception:
+        pass
+    return None
 
 
-@app.route('/')
-def home():
-    return jsonify({
-        "status": "Luau Logger API online",
-        "endpoints": {
-            "POST /api/deobf": "Recebe codigo Luau (file ou JSON com code/url), retorna desofuscado"
-        }
-    })
+def _clean_output(text: str) -> str:
+    lines = text.splitlines()
+    if lines and "Speack" in lines[0]:
+        lines[0] = "-- Deobf by Speack | https://discord.gg/SxfqCrd952"
+    return chr(10).join(lines)
 
 
-@app.route('/api/deobf', methods=['POST'])
-def deobfuscate_endpoint():
-    code = None
-    
-    if request.files:
-        file = request.files.get("file")
-        if file:
-            code = file.read().decode("utf-8", errors="replace")
-    
-    if not code:
-        data = request.get_json() or {}
-        code = data.get("code", "")
-        if not code and data.get("url"):
-            code = fetch_url(data["url"])
-            if not code:
-                return jsonify({"success": False, "error": "Failed to fetch URL"}), 400
-    
-    if not code or not code.strip():
-        return jsonify({"success": False, "error": "No code provided"}), 400
-    
+def deobfuscate(code: str, mode: str = "moonsecv3") -> str:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lua", delete=False) as f:
+        f.write(code)
+        tmp_path = f.name
+
     try:
-        deobfuscated = deobfuscate_revea(code)
-        return jsonify({
-            "success": True,
-            "original_length": len(code),
-            "deobfuscated_length": len(deobfuscated),
-            "code": deobfuscated
-        })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        with open(tmp_path, "rb") as f:
+            response = requests.post(
+                API_URL,
+                files={"file": f},
+                timeout=120
+            )
+
+        if response.status_code == 200:
+            return _clean_output(response.text)
+        return f"Erro da API: HTTP {response.status_code} - {response.text}"
+    except requests.RequestException as e:
+        return f"Erro de conexao: {e}"
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+def deobfuscate_from_url(url: str, mode: str = "moonsecv3") -> str:
+    try:
+        response = requests.post(
+            API_URL,
+            data={"url": url},
+            timeout=120
+        )
+
+        if response.status_code == 200:
+            return _clean_output(response.text)
+        return f"Erro da API: HTTP {response.status_code} - {response.text}"
+    except requests.RequestException as e:
+        return f"Erro de conexao: {e}"
+
+
+def deobfuscate_69ms(code: str) -> str:
+    endpoint = _get_69ms_endpoint()
+    if not endpoint:
+        return "Erro: nao foi possivel obter o endpoint atual da API 69ms."
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lua", delete=False) as f:
+        f.write(code)
+        tmp_path = f.name
+
+    try:
+        with open(tmp_path, "rb") as f:
+            response = requests.post(
+                endpoint,
+                headers={"Authorization": f"Bearer {TOKEN_69MS}"},
+                files={"file": ("script.lua", f, "text/plain")},
+                timeout=300
+            )
+
+        if response.status_code == 200:
+            return _clean_output(response.text)
+        return f"Erro da API: HTTP {response.status_code} - {response.text[:500]}"
+    except requests.RequestException as e:
+        return f"Erro de conexao: {e}"
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+def deobfuscate_69ms_from_url(url: str) -> str:
+    try:
+        r = requests.get(url, timeout=30)
+        if r.status_code != 200:
+            return f"Erro ao baixar URL: HTTP {r.status_code}"
+        code = r.text
+        return deobfuscate_69ms(code)
+    except requests.RequestException as e:
+        return f"Erro de conexao: {e}"
+
+
+def deobfuscate_revea(code: str) -> str:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lua", delete=False) as f:
+        f.write(code)
+        tmp_path = f.name
+
+    try:
+        with open(tmp_path, "rb") as f:
+            response = requests.post(
+                REVEA_URL,
+                files={"file": f},
+                timeout=120
+            )
+
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success"):
+                return data["code"]
+            return f"Erro da API: {data.get('error', 'unknown')}"
+        return f"Erro da API: HTTP {response.status_code} - {response.text}"
+    except requests.RequestException as e:
+        return f"Erro de conexao: {e}"
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+def deobfuscate_revea_from_url(url: str) -> str:
+    try:
+        r = requests.get(url, timeout=30)
+        if r.status_code != 200:
+            return f"Erro ao baixar URL: HTTP {r.status_code}"
+        code = r.text
+        return deobfuscate_revea(code)
+    except requests.RequestException as e:
+        return f"Erro de conexao: {e}"
+
+
+def deobfuscate_revea_dump(code: str) -> str:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lua", delete=False) as f:
+        f.write(code)
+        tmp_path = f.name
+
+    try:
+        with open(tmp_path, "rb") as f:
+            response = requests.post(
+                REVEA_DUMP_URL,
+                files={"file": f},
+                timeout=120
+            )
+
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success"):
+                return data["code"]
+            return f"Erro da API: {data.get('error', 'unknown')}"
+        return f"Erro da API: HTTP {response.status_code} - {response.text}"
+    except requests.RequestException as e:
+        return f"Erro de conexao: {e}"
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+def deobfuscate_revea_dump_from_url(url: str) -> str:
+    try:
+        response = requests.post(
+            REVEA_DUMP_URL,
+            data={"url": url},
+            timeout=120
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success"):
+                return data["code"]
+            return f"Erro da API: {data.get('error', 'unknown')}"
+        return f"Erro da API: HTTP {response.status_code} - {response.text}"
+    except requests.RequestException as e:
+        return f"Erro de conexao: {e}"
