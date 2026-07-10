@@ -14,30 +14,19 @@ def run_revea_logger(code: str) -> str:
     if not os.path.exists(LOGGER_LUA_PATH):
         raise FileNotFoundError("logger.lua nao encontrado em src/logger.lua")
 
-    # Cria um script temporário que carrega o logger.lua e executa com o código inline
-    # Isso evita problemas com argumentos de linha de comando
-    wrapper_code = f"""-- Auto-generated wrapper
+    # Le o logger.lua
+    with open(LOGGER_LUA_PATH, "r") as f:
+        logger_code = f.read()
+
+    # Cria um script que concatena o logger.lua + execucao
+    # Usando loadstring para carregar o codigo a ser desofuscado
+    wrapper_code = logger_code + "
+
+" + f"""
+-- Codigo a ser desofuscado
 local code = [==========[
 {code}
 ]==========]
-
--- Carrega o logger.lua
-local logger_f = io.open("{LOGGER_LUA_PATH}", "r")
-if not logger_f then
-    print("Failed to open logger.lua")
-    return
-end
-
-local logger_code = logger_f:read("*a")
-logger_f:close()
-
-local chunk, err = loadstring(logger_code)
-if not chunk then
-    print("Failed to load logger.lua: " .. tostring(err))
-    return
-end
-
-chunk()
 
 local ok, result = q.dump_string(code, nil)
 if ok and result then
