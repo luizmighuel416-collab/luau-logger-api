@@ -1,5 +1,32 @@
 -- Wrapper para executar logger.lua e retornar output no stdout
-local input_file = arg[1]
+
+-- Tenta obter argumentos de várias fontes (compatível com Luau, Lune, etc.)
+local argv
+if arg then
+    argv = arg
+elseif ... then
+    local args = {...}
+    if #args > 0 then
+        argv = args
+    end
+end
+
+-- Se ainda não tem argv, tenta via process (Lune)
+if not argv then
+    local ok, process = pcall(function()
+        return require("@lune/process")
+    end)
+    if ok and process and type(process.args) == "table" then
+        argv = process.args
+    end
+end
+
+-- Fallback: argv vazio
+if not argv then
+    argv = {}
+end
+
+local input_file = argv[1]
 if not input_file then
     print("Usage: luau wrapper.lua <input.lua>")
     return
@@ -38,7 +65,6 @@ end
 chunk()
 
 -- Agora q está definido, chamamos dump_string com o código
--- dump_string(source, output_file) -> se output_file for nil, retorna (true, result)
 local ok, result = q.dump_string(code, nil)
 if ok and result then
     print(result)
