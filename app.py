@@ -14,27 +14,29 @@ def run_revea_logger(code: str) -> str:
     if not os.path.exists(LOGGER_LUA_PATH):
         raise FileNotFoundError("logger.lua nao encontrado em src/logger.lua")
 
-    # Le o logger.lua
     with open(LOGGER_LUA_PATH, "r") as f:
         logger_code = f.read()
 
-    # Cria um script que concatena o logger.lua + execucao
-    # Usando loadstring para carregar o codigo a ser desofuscado
-    wrapper_code = logger_code + "
+    # Usa delimitador Lua que nao deve aparecer no codigo
+    delimiter = "__LARRY_CODE_DELIMITER_" + os.urandom(8).hex() + "__"
 
-" + f"""
--- Codigo a ser desofuscado
-local code = [==========[
-{code}
-]==========]
+    wrapper_parts = [
+        logger_code,
+        "",
+        "-- Codigo a ser desofuscado",
+        "local code = " + delimiter,
+        code,
+        delimiter,
+        "",
+        "local ok, result = q.dump_string(code, nil)",
+        "if ok and result then",
+        "    print(result)",
+        "else",
+        '    print("Failed to dump: " .. tostring(result))',
+        "end",
+    ]
 
-local ok, result = q.dump_string(code, nil)
-if ok and result then
-    print(result)
-else
-    print("Failed to dump: " .. tostring(result))
-end
-"""
+    wrapper_code = "\n".join(wrapper_parts)
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".lua", delete=False) as tmp:
         tmp.write(wrapper_code)
