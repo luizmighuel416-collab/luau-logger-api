@@ -17,44 +17,62 @@ def run_revea_logger(code: str) -> str:
     with open(LOGGER_LUA_PATH, "r") as f:
         logger_code = f.read()
 
-    # Usa delimitador Lua que nao deve aparecer no codigo
-    delimiter = "__LARRY_CODE_DELIMITER_" + os.urandom(8).hex() + "__"
+    # Salva o codigo em um arquivo temporario
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lua", delete=False) as code_file:
+        code_file.write(code)
+        code_file.flush()
+        code_path = code_file.name
 
-    wrapper_parts = [
-        logger_code,
-        "",
-        "-- Codigo a ser desofuscado",
-        "local code = " + delimiter,
-        code,
-        delimiter,
-        "",
-        "local ok, result = q.dump_string(code, nil)",
-        "if ok and result then",
-        "    print(result)",
-        "else",
-        '    print("Failed to dump: " .. tostring(result))',
-        "end",
-    ]
-
-    wrapper_code = "\n".join(wrapper_parts)
+    # Cria o wrapper que le o arquivo via variavel de ambiente
+    wrapper_lua = (
+        logger_code + "\n\n"
+        + "-- Le o codigo do arquivo temporario\n"
+        + 'local code_path = os.getenv("REVEA_CODE_PATH")\n'
+        + "if not code_path then\n"
+        + '    print("REVEA_CODE_PATH nao definida")\n'
+        + "    return\n"
+        + "end\n"
+        + "\n"
+        + "local f = io.open(code_path, \"r\")\n"
+        + "if not f then\n"
+        + '    print("Failed to open: " .. tostring(code_path))\n'
+        + "    return\n"
+        + "end\n"
+        + "\n"
+        + "local code = f:read(\"*a\")\n"
+        + "f:close()\n"
+        + "\n"
+        + "local ok, result = q.dump_string(code, nil)\n"
+        + "if ok and result then\n"
+        + "    print(result)\n"
+        + "else\n"
+        + '    print("Failed to dump: " .. tostring(result))\n'
+        + "end\n"
+    )
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".lua", delete=False) as tmp:
-        tmp.write(wrapper_code)
+        tmp.write(wrapper_lua)
         tmp.flush()
         wrapper_path = tmp.name
 
     try:
+        env = os.environ.copy()
+        env["REVEA_CODE_PATH"] = code_path
+
         result = subprocess.run(
             ["luau", wrapper_path],
             capture_output=True,
             text=True,
-            timeout=60
+            timeout=60,
+            env=env
         )
         output = result.stdout if result.stdout else result.stderr
         return output
     finally:
         if os.path.exists(wrapper_path):
             os.unlink(wrapper_path)
+        if os.path.exists(code_path):
+            os.unlink(code_path)
 
 
 def deobfuscate_revea(code):
