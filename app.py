@@ -7,24 +7,54 @@ import tempfile
 
 app = Flask(__name__)
 
-WRAPPER_LUA_PATH = os.path.join(os.path.dirname(__file__), "src", "wrapper.lua")
 LOGGER_LUA_PATH = os.path.join(os.path.dirname(__file__), "src", "logger.lua")
 
 
 def run_revea_logger(code: str) -> str:
-    if not os.path.exists(WRAPPER_LUA_PATH):
-        raise FileNotFoundError("wrapper.lua nao encontrado em src/wrapper.lua")
     if not os.path.exists(LOGGER_LUA_PATH):
         raise FileNotFoundError("logger.lua nao encontrado em src/logger.lua")
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".lua", delete=False) as tmp_input:
-        tmp_input.write(code)
-        tmp_input.flush()
-        input_path = tmp_input.name
+    # Cria um script temporário que carrega o logger.lua e executa com o código inline
+    # Isso evita problemas com argumentos de linha de comando
+    wrapper_code = f"""-- Auto-generated wrapper
+local code = [==========[
+{code}
+]==========]
+
+-- Carrega o logger.lua
+local logger_f = io.open("{LOGGER_LUA_PATH}", "r")
+if not logger_f then
+    print("Failed to open logger.lua")
+    return
+end
+
+local logger_code = logger_f:read("*a")
+logger_f:close()
+
+local chunk, err = loadstring(logger_code)
+if not chunk then
+    print("Failed to load logger.lua: " .. tostring(err))
+    return
+end
+
+chunk()
+
+local ok, result = q.dump_string(code, nil)
+if ok and result then
+    print(result)
+else
+    print("Failed to dump: " .. tostring(result))
+end
+"""
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lua", delete=False) as tmp:
+        tmp.write(wrapper_code)
+        tmp.flush()
+        wrapper_path = tmp.name
 
     try:
         result = subprocess.run(
-            ["luau", WRAPPER_LUA_PATH, input_path],
+            ["luau", wrapper_path],
             capture_output=True,
             text=True,
             timeout=60
@@ -32,13 +62,13 @@ def run_revea_logger(code: str) -> str:
         output = result.stdout if result.stdout else result.stderr
         return output
     finally:
-        if os.path.exists(input_path):
-            os.unlink(input_path)
+        if os.path.exists(wrapper_path):
+            os.unlink(wrapper_path)
 
 
 def deobfuscate_revea(code):
     result = code
-    
+
     def unescape_hex(match):
         hex_str = match.group(1)
         try:
@@ -47,9 +77,9 @@ def deobfuscate_revea(code):
             return f'"{decoded}"'
         except:
             return match.group(0)
-    
+
     result = re.sub(r'"(\\x[0-9a-fA-F]{2}(?:\\x[0-9a-fA-F]{2})+)"', unescape_hex, result)
-    
+
     def unescape_dec(match):
         nums = re.findall(r'\\(\d{1,3})', match.group(1))
         try:
@@ -57,9 +87,9 @@ def deobfuscate_revea(code):
             return f'"{decoded}"'
         except:
             return match.group(0)
-    
+
     result = re.sub(r'"(\\\d{1,3}(?:\\\d{1,3})+)"', unescape_dec, result)
-    
+
     for _ in range(10):
         old = result
         aliases = {}
@@ -71,7 +101,7 @@ def deobfuscate_revea(code):
             result = re.sub(r'\b' + re.escape(alias) + r'\b', original, result)
         if result == old:
             break
-    
+
     lines = result.split('\n')
     cleaned_lines = []
     for line in lines:
@@ -82,18 +112,18 @@ def deobfuscate_revea(code):
                 continue
         cleaned_lines.append(line)
     result = '\n'.join(cleaned_lines)
-    
+
     global_funcs = ['print', 'warn', 'error', 'pcall', 'xpcall', 'loadstring',
                     'require', 'pairs', 'ipairs', 'next', 'tonumber', 'tostring',
                     'type', 'assert', 'collectgarbage', 'getfenv', 'setfenv',
                     'rawget', 'rawset', 'rawequal', 'select', 'unpack', 'getmetatable',
                     'setmetatable', 'debug', 'math', 'string', 'table', 'coroutine',
                     'os', 'io', 'bit32', 'utf8']
-    
+
     for func in global_funcs:
         result = re.sub(rf'_G\["{func}"\]\b', func, result)
         result = re.sub(rf'_G\[\'{func}\'\]\b', func, result)
-    
+
     result = re.sub(r'\n{3,}', '\n\n', result)
     return result
 
@@ -123,12 +153,12 @@ def home():
 @app.route('/api/deobf', methods=['POST'])
 def deobfuscate_endpoint():
     code = None
-    
+
     if request.files:
         file = request.files.get("file")
         if file:
             code = file.read().decode("utf-8", errors="replace")
-    
+
     if not code:
         data = request.get_json() or {}
         code = data.get("code", "")
@@ -136,10 +166,10 @@ def deobfuscate_endpoint():
             code = fetch_url(data["url"])
             if not code:
                 return jsonify({"success": False, "error": "Failed to fetch URL"}), 400
-    
+
     if not code or not code.strip():
         return jsonify({"success": False, "error": "No code provided"}), 400
-    
+
     try:
         deobfuscated = deobfuscate_revea(code)
         return jsonify({
@@ -155,12 +185,12 @@ def deobfuscate_endpoint():
 @app.route('/api/revea', methods=['POST'])
 def revea_endpoint():
     code = None
-    
+
     if request.files:
         file = request.files.get("file")
         if file:
             code = file.read().decode("utf-8", errors="replace")
-    
+
     if not code:
         data = request.get_json() or {}
         code = data.get("code", "")
@@ -168,10 +198,10 @@ def revea_endpoint():
             code = fetch_url(data["url"])
             if not code:
                 return jsonify({"success": False, "error": "Failed to fetch URL"}), 400
-    
+
     if not code or not code.strip():
         return jsonify({"success": False, "error": "No code provided"}), 400
-    
+
     try:
         dumped = run_revea_logger(code)
         return jsonify({
